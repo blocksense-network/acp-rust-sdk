@@ -1,6 +1,6 @@
 use anyhow::Result;
 use futures::{AsyncRead, AsyncWrite, future::LocalBoxFuture};
-use rpc::{MessageHandler, Side};
+use rpc::MessageHandler;
 use std::sync::Arc;
 
 mod agent;
@@ -13,7 +13,10 @@ mod stream_broadcast;
 pub use agent::*;
 pub use agent_client_protocol_schema::*;
 pub use client::*;
-pub use rpc::RpcConnection;
+pub use rpc::{
+    Id, IncomingMessage, OutgoingMessage, ResponseResult, RpcConnection, RpcDispatcher, Side,
+    ValueDispatcher,
+};
 pub use stream_broadcast::{
     StreamMessage, StreamMessageContent, StreamMessageDirection, StreamReceiver,
 };

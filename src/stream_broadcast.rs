@@ -226,6 +226,12 @@ impl StreamSender {
     }
 }
 
+impl Clone for StreamSender {
+    fn clone(&self) -> Self {
+        StreamSender(self.0.clone())
+    }
+}
+
 /// A broadcast for observing RPC message streams.
 ///
 /// This is used internally by the RPC connection to allow multiple receivers

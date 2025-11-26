@@ -23,8 +23,8 @@ use futures::{
 };
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::value::RawValue;
 use serde_json::Value;
+use serde_json::value::RawValue;
 
 use super::stream_broadcast::{StreamBroadcast, StreamReceiver, StreamSender};
 
@@ -38,7 +38,9 @@ pub struct RpcDispatcher<Local: Side, Remote: Side> {
 
 impl<Local: Side, Remote: Side> Default for RpcDispatcher<Local, Remote> {
     fn default() -> Self {
-        Self { _marker: std::marker::PhantomData }
+        Self {
+            _marker: std::marker::PhantomData,
+        }
     }
 }
 
@@ -96,7 +98,8 @@ impl<Local: Side, Remote: Side> RpcDispatcher<Local, Remote> {
                 match Local::decode_request(method, message.params) {
                     Ok(request) => {
                         broadcast.incoming_request(id.clone(), method, &request);
-                        let _ = incoming_tx.unbounded_send(IncomingMessage::Request { id, request });
+                        let _ =
+                            incoming_tx.unbounded_send(IncomingMessage::Request { id, request });
                     }
                     Err(err) => {
                         broadcast.incoming_response(id.clone(), Err(&err));
@@ -110,7 +113,7 @@ impl<Local: Side, Remote: Side> RpcDispatcher<Local, Remote> {
             } else if let Some(pending_response) = pending_responses.lock().remove(&id) {
                 // Response
                 if let Some(result_value) = message.result {
-                                        broadcast.incoming_response(id.clone(), Ok(Some(result_value)));
+                    broadcast.incoming_response(id.clone(), Ok(Some(result_value)));
                     let result = (pending_response.deserialize)(result_value);
                     pending_response.respond.send(result).ok();
                 } else if let Some(error) = message.error {
@@ -118,7 +121,9 @@ impl<Local: Side, Remote: Side> RpcDispatcher<Local, Remote> {
                     pending_response.respond.send(Err(error)).ok();
                 } else {
                     broadcast.incoming_response(id.clone(), Ok(None));
-                    let result = (pending_response.deserialize)(&RawValue::from_string("null".into()).unwrap());
+                    let result = (pending_response.deserialize)(
+                        &RawValue::from_string("null".into()).unwrap(),
+                    );
                     pending_response.respond.send(result).ok();
                 }
             } else {
@@ -129,7 +134,8 @@ impl<Local: Side, Remote: Side> RpcDispatcher<Local, Remote> {
             match Local::decode_notification(method, message.params) {
                 Ok(notification) => {
                     broadcast.incoming_notification(method, &notification);
-                    let _ = incoming_tx.unbounded_send(IncomingMessage::Notification { notification });
+                    let _ =
+                        incoming_tx.unbounded_send(IncomingMessage::Notification { notification });
                 }
                 Err(err) => log::debug!("Error decoding notification: {}", err),
             }
@@ -138,7 +144,10 @@ impl<Local: Side, Remote: Side> RpcDispatcher<Local, Remote> {
     }
 
     /// Format an outgoing message (response/notification) as JSON value.
-    pub fn outgoing_to_value(&self, message: &OutgoingMessage<Local, Remote>) -> Result<Value, Error> {
+    pub fn outgoing_to_value(
+        &self,
+        message: &OutgoingMessage<Local, Remote>,
+    ) -> Result<Value, Error> {
         serde_json::to_value(JsonRpcMessage::wrap(message)).map_err(Error::into_internal_error)
     }
 }
@@ -238,11 +247,9 @@ where
             id.clone(),
             PendingResponse {
                 deserialize: |value| {
-                    serde_json::from_str::<Out>(value.get())
-                        .map(|out| Box::new(out) as _)
-                        .map_err(|_| {
-                            Error::internal_error().with_data("failed to deserialize response")
-                        })
+                    serde_json::from_str::<Out>(value.get()).map(|out| Box::new(out) as _).map_err(
+                        |_| Error::internal_error().with_data("failed to deserialize response"),
+                    )
                 },
                 respond: tx,
             },
@@ -397,7 +404,10 @@ struct RawIncomingOwned {
     error: Option<Error>,
 }
 
-pub(crate) enum IncomingMessage<Local: Side> {
+/// Incoming message decoded for a given side. Exposed so embedders can drive
+/// the dispatcher using custom transports (e.g., WebSockets) while reusing the
+/// SDK's decoding and handler wiring.
+pub enum IncomingMessage<Local: Side> {
     Request { id: Id, request: Local::InRequest },
     Notification { notification: Local::InNotification },
 }
@@ -432,6 +442,74 @@ pub struct JsonRpcMessage<M> {
     jsonrpc: &'static str,
     #[serde(flatten)]
     message: M,
+}
+
+/// Helper that exposes a Value-based driver around the dispatcher so custom
+/// transports (WebSockets, HTTP streaming, etc.) can feed parsed JSON values
+/// into the SDK without using the built-in line-oriented IO task. The driver
+/// keeps the same request/notification decoding semantics and surfaces decoded
+/// messages via an `UnboundedReceiver`.
+pub struct ValueDispatcher<Local: Side, Remote: Side> {
+    dispatcher: RpcDispatcher<Local, Remote>,
+    incoming_tx: UnboundedSender<IncomingMessage<Local>>,
+    incoming_rx: Option<UnboundedReceiver<IncomingMessage<Local>>>,
+    pending_responses: Arc<Mutex<HashMap<Id, PendingResponse>>>,
+    broadcast: StreamSender,
+}
+
+impl<Local: Side, Remote: Side> ValueDispatcher<Local, Remote> {
+    /// Create a new value-driven dispatcher alongside a receiver for decoded
+    /// incoming messages and a stream receiver for broadcast/telemetry.
+    pub fn new() -> (Self, StreamReceiver) {
+        let (incoming_tx, incoming_rx) = mpsc::unbounded();
+        let pending_responses = Arc::new(Mutex::new(HashMap::default()));
+        let (broadcast, broadcast_state) = StreamBroadcast::new();
+        let rx = broadcast_state.receiver();
+        (
+            Self {
+                dispatcher: RpcDispatcher::new(),
+                incoming_tx,
+                incoming_rx: Some(incoming_rx),
+                pending_responses,
+                broadcast,
+            },
+            rx,
+        )
+    }
+}
+
+impl<Local: Side, Remote: Side> ValueDispatcher<Local, Remote> {
+    /// Feed a parsed JSON value into the dispatcher. Returns an optional JSON
+    /// value that should be sent back to the remote peer immediately (e.g.,
+    /// decoding errors or responses to requests initiated by the local side).
+    pub async fn handle_json(&mut self, value: Value) -> Option<Value> {
+        self.dispatcher
+            .handle_value(
+                value,
+                &self.incoming_tx,
+                &self.pending_responses,
+                &self.broadcast,
+            )
+            .await
+    }
+
+    /// Return the receiver for decoded incoming messages.
+    pub fn take_incoming(&mut self) -> UnboundedReceiver<IncomingMessage<Local>> {
+        self.incoming_rx.take().unwrap_or_else(|| mpsc::unbounded().1)
+    }
+
+    /// Format an outgoing message (response/notification) as a JSON value.
+    pub fn outgoing_to_value(
+        &self,
+        message: &OutgoingMessage<Local, Remote>,
+    ) -> Result<Value, Error> {
+        self.dispatcher.outgoing_to_value(message)
+    }
+
+    /// Access the broadcast stream sender (useful for tests/telemetry).
+    pub(crate) fn broadcast(&self) -> StreamSender {
+        self.broadcast.clone()
+    }
 }
 
 impl<M> JsonRpcMessage<M> {
