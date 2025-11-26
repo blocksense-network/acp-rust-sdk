@@ -1,6 +1,7 @@
 use anyhow::Result;
 use futures::{AsyncRead, AsyncWrite, future::LocalBoxFuture};
 use rpc::{MessageHandler, RpcConnection, Side};
+use std::sync::Arc;
 
 mod agent;
 mod client;
@@ -71,6 +72,7 @@ impl ClientSideConnection {
     pub fn subscribe(&self) -> StreamReceiver {
         self.conn.subscribe()
     }
+
 }
 
 #[async_trait::async_trait(?Send)]
@@ -363,6 +365,15 @@ impl AgentSideConnection {
     /// A [`StreamReceiver`] that can be used to receive stream messages.
     pub fn subscribe(&self) -> StreamReceiver {
         self.conn.subscribe()
+    }
+
+    /// Send a server-initiated notification to the client (e.g., session/update).
+    pub fn notify(
+        &self,
+        method: impl Into<Arc<str>>,
+        params: Option<AgentNotification>,
+    ) -> Result<(), Error> {
+        self.conn.notify(method, params)
     }
 }
 
