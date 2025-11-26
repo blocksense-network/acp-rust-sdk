@@ -1,6 +1,6 @@
 use anyhow::Result;
 use futures::{AsyncRead, AsyncWrite, future::LocalBoxFuture};
-use rpc::{MessageHandler, RpcConnection, Side};
+use rpc::{MessageHandler, RpcConnection};
 use std::sync::Arc;
 
 mod agent;
@@ -13,6 +13,9 @@ mod stream_broadcast;
 pub use agent::*;
 pub use agent_client_protocol_schema::*;
 pub use client::*;
+pub use rpc::{
+    Id, IncomingMessage, OutgoingMessage, ResponseResult, RpcDispatcher, Side, ValueDispatcher,
+};
 pub use stream_broadcast::{
     StreamMessage, StreamMessageContent, StreamMessageDirection, StreamReceiver,
 };
@@ -72,7 +75,6 @@ impl ClientSideConnection {
     pub fn subscribe(&self) -> StreamReceiver {
         self.conn.subscribe()
     }
-
 }
 
 #[async_trait::async_trait(?Send)]
